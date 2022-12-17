@@ -1,2 +1,3 @@
-# aev
-Electric vehicle simulator
+# AEV
+
+Distribtued Electric Vehicle Simulator and Aggregator Control Center.
