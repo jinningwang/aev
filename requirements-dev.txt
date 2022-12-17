@@ -1,0 +1,9 @@
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+# platform: osx-arm64
+flake8
+jupyter
+matplotlib
+numpy
+pandas
+scipy
