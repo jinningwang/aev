@@ -1,3 +1,4 @@
+from aev.src.share import DictAttr, DataUnit
 import itertools
 import sys
 import time
@@ -15,12 +16,11 @@ from contextlib import redirect_stdout
 import logging
 logger = logging.getLogger(__name__)
 
-from aev.src.share import DictAttr
 
 class EVData():
     """EV data class"""
 
-    def __init__(self, idx, s, d, ts, dcs, dcd, tsca) -> None:
+    def __init__(self, idx, cols, N) -> None:
         """
         Two pandas.DataFrame are used to store EV data, one for static data,
         the other for dynamic data.
@@ -32,63 +32,35 @@ class EVData():
 
         Parameters
         ----------
-        s: np.array
-            Static data.
-        d: np.array
-            Dynamic data.
-        ts: np.array
-            Time series data.
-        col: Dict
-            Data columns.
+        idx: list
+            EV index.
+        cols: list
+            EV data columns.
+        N: int
+            Number of EVs.
         """
         self.idx = idx
-        self.s = DataUnit(data=s, col=[c for c in dcs.as_dict().keys()],
-                          is_idx=True, idx=idx)
-        self.d = DataUnit(data=d, col=[c for c in dcd.as_dict().keys()],
-                          is_idx=True, idx=idx)
-        self.ts = DataUnit(data=ts, col=[c for c in tsca.as_dict().keys()],
-                           is_idx=False, idx=None)
-        self.col = DictAttr({'s': dcs, 'd': dcd, 'ts': tsca})
+        self._cols = cols
+        for col in self._cols:
+            setattr(self, col, np.array([-9.0]*N))
 
-    # def __repr__(self) -> str:
-    #     ss = _check_mem(self.s)
-    #     sd = _check_mem(self.d)
-    #     st = _check_mem(self.ts)
-    #     info = f'EVData: {self.s.shape[0]} EVs, Sdata: '+ss + ', Ddata: '+sd+', Tdata: '+st
-    #     return info
+    def as_df(self) -> pd.DataFrame:
+        """Convert to pandas.DataFrame"""
+        # TODO: improve
+        df = pd.DataFrame()
+        df['idx'] = self.idx
+        for col in self._cols:
+            df[col] = getattr(self, col)
+        return df
 
-
-def _check_mem(df):
-    """Check memory usage of a dataframe"""
-    buffer = io.StringIO()
-    with redirect_stdout(buffer):
-        df.info(verbose=False, memory_usage=True, buf=buffer)
-    s = buffer.getvalue()
-    mem_use = s.split(' ')[-2] + ' ' + s.split(' ')[-1].strip('\n')
-    return mem_use
+    def __repr__(self) -> str:
+        pass
 
 
 class EVS():
     """
     EV Station class to hold EV data, control EV status, and collecte EV info.
     """
-
-    # def ctype(self):
-    #     """Change data type"""
-    #     ddata = self.MCS.data.d
-    #     sdata = self.MCS.data.s
-    #     ts = self.MCS.data.ts
-    #     dcols = {'s': ['ts', 'tf', 'tt', 'soc0', 'na0',
-    #                    'soci', 'socd', 'Pc', 'Pd',
-    #                    'nc', 'nd', 'Q'],
-    #              'd': ['u', 'u0', 'soc', 'c', 'lc', 'sx',
-    #                    'na', 'ama', 'agc', 'mod']}
-    #     sdata['idx'] = sdata['idx'].astype('int32')
-    #     sdata[dcols['s']] = sdata[dcols['s']].astype('float32')
-    #     ddata['idx'] = ddata['idx'].astype('int32')
-    #     ddata[dcols['d']] = ddata[dcols['d']].astype('float32')
-    #     ts = ts.astype('float32')
-    #     return True
 
     def __init__(self,
                  config, mcs_config,
@@ -157,26 +129,15 @@ class EVS():
         # --- config ---
         self.config = DictAttr(config)
         # --- declear data variable ---
-        # data columns
-        dc = {'s': ['nam', 'ts', 'tf', 'tt', 'soc0', 'na0',
-                    'soci', 'socd', 'Pc', 'Pd',
-                    'nc', 'nd', 'Q'],
-              'd': ['u', 'u0', 'soc', 'c', 'lc', 'sx',
-                    'na', 'ama', 'agc', 'mod']}
-        dcs = DictAttr({c: dc['s'].index(c) for c in dc['s']})
-        dcd = DictAttr({c: dc['d'].index(c) for c in dc['d']})
-        # data columns as nested DictAttr
-        self.dca = DictAttr({'s': dcs, 'd': dcd})
-        dca = self.dca  # pointer to data columns
-        self.idx = np.arange(self.config.N)  # EV index
-        # static data
-        datas = np.full((self.config.N, len(dc['s'])),
-                        fill_value=np.nan,
-                        dtype=np.float64)
-        # dynamic data
-        datad = np.full((self.config.N, len(dc['d'])),
-                        fill_value=np.nan,
-                        dtype=np.float64)
+        idx = [f'{name}_{i}' for i in range(self.config.N)]
+        cols = [
+            # --- dynamic ---
+            'u', 'u0', 'soc', 'c', 'lc', 'sx',
+            'na', 'ama', 'agc', 'mod',
+            # --- static ---
+            'nam', 'ts', 'tf', 'tt', 'soc0', 'na0',
+            'soci', 'socd', 'Pc', 'Pd',
+            'nc', 'nd', 'Q']
 
         # --- initialize MCS ---
         # add current timestamp `t` to config
@@ -186,44 +147,44 @@ class EVS():
                          'ict': self.config.ict},
                       **mcs_config}
         # put data into MCS
-        self.MCS = MCS(config=mcs_config, idx=self.idx,
-                       datas=datas, datad=datad,
-                       dcs=dcs, dcd=dcd)
-
-        dsp = self.MCS.data.s  # pointer to static data
-        ddp = self.MCS.data.d  # pointer to dynamic data
+        self.MCS = MCS(config=mcs_config, idx=idx,
+                       cols=cols, N=self.config.N)
+        mdp = self.MCS.data  # pointer to MCS data
 
         # --- initialize data ---
         # --- 1. uniform distribution parameters ---
         ud_cols = ['Pc', 'Pd', 'nc', 'nd', 'Q']
         np.random.seed(self.config.seed)
         for col in ud_cols:
-            data = np.random.uniform(size=self.config.N,
-                                     low=ud_param[col]['lb'],
-                                     high=ud_param[col]['ub'])
-            dsp.set(src=col, data=data)
-        # NOTE: assumtpion: nc = nd
-        dsp.set(src='nd', data=dsp.get(src='nc'))
+            value = np.random.uniform(size=self.config.N,
+                                      low=ud_param[col]['lb'],
+                                      high=ud_param[col]['ub'])
+            setattr(mdp, col, value)
+        mdp.nd = mdp.nc  # NOTE: assumtpion: nc = nd
 
         # --- 2. normal distribution parameters ---
-        # --- 2.1 ---
+        # --- 2.1 non-time parameters ---
         nd_cols = ['soci', 'socd', 'tt']
         for col in nd_cols:
-            a = (nd_param[col]['lb'] - nd_param[col]['mu']) / nd_param[col]['var']
-            b = (nd_param[col]['ub'] - nd_param[col]['mu']) / nd_param[col]['var']
+            a = (nd_param[col]['lb'] - nd_param[col]
+                 ['mu']) / nd_param[col]['var']
+            b = (nd_param[col]['ub'] - nd_param[col]
+                 ['mu']) / nd_param[col]['var']
             distribution = stats.truncnorm(a, b,
                                            loc=nd_param[col]['mu'],
                                            scale=nd_param[col]['var'])
-            data = distribution.rvs(self.config.N,
-                                    random_state=self.config.seed)
-            dsp.set(src=col, data=data)
+            value = distribution.rvs(self.config.N,
+                                     random_state=self.config.seed)
+            setattr(mdp, col, value)
 
         # --- 2.2 time parameters ---
         nd_cols = ['ts1', 'ts2', 'tf1', 'tf2']
         tparam = pd.DataFrame()
         for col in nd_cols:
-            a = (nd_param[col]['lb'] - nd_param[col]['mu']) / nd_param[col]['var']
-            b = (nd_param[col]['ub'] - nd_param[col]['mu']) / nd_param[col]['var']
+            a = (nd_param[col]['lb'] - nd_param[col]
+                 ['mu']) / nd_param[col]['var']
+            b = (nd_param[col]['ub'] - nd_param[col]
+                 ['mu']) / nd_param[col]['var']
             distribution = stats.truncnorm(a, b,
                                            loc=nd_param[col]['mu'],
                                            scale=nd_param[col]['var'])
@@ -244,45 +205,40 @@ class EVS():
         mid = tp['tf'].iloc[row_idx].values
         tp['tf'].iloc[row_idx] = tp['ts'].iloc[row_idx]
         tp['ts'].iloc[row_idx] = mid
-        dsp.set(src='ts', data=tp['ts'])
-        dsp.set(src='tf', data=tp['tf'])
+        setattr(mdp, 'tf', tp['tf'].values)
+        setattr(mdp, 'ts', tp['ts'].values)
 
-        # --- memory save settings ---
+        # --- memory save ---
         if self.config.memory_save:
-            mask_u1 = dsp.get(src='ts') > (self.MCS.config.ts + self.MCS.config.th)
-            mask_u2 = dsp.get(src='tf') < self.MCS.config.ts
+            mask_u1 = mdp.ts > (self.MCS.config.ts + self.MCS.config.th)
+            mask_u2 = mdp.tf < self.MCS.config.ts
             mask = mask_u1 | mask_u2
             drop_id = np.where(mask)[0]
-            for obj in [self, self.MCS.data,
-                        self.MCS.data.s, self.MCS.data.d]:
-                idx = getattr(obj, 'idx')
-                idx = np.delete(idx, drop_id, axis=0)
-                setattr(obj, 'idx', idx)
-            for obj in [self.MCS.data.s, self.MCS.data.d]:
-                value = getattr(obj, 'v')
+            for col in mdp._cols + ['idx']:
+                value = getattr(mdp, col)
                 value = np.delete(value, drop_id, axis=0)
-                setattr(obj, 'v', value)
+                setattr(mdp, col, value)
             # --- info ---
             info_mem_save = f'Memory save is turned on, EVs out of time range '\
                 f'[{self.MCS.config.ts}, {self.MCS.config.ts + self.MCS.config.th}] are dropped.'
             logger.warning(info_mem_save)
 
-        # --- 3. online status ---
-        self.MCS.g_u()
-        ddp.set(src='u0', data=ddp.get(src='u0'))
+        # # --- 3. online status ---
+        # self.MCS.g_u()
+        # ddp.set(src='u0', data=ddp.get(src='u0'))
 
-        # --- 4. initialize SOC ---
-        # TODO: do we need to consider the AGC participation?
-        # time required to charge to demanded SOC
-        factor1 = dsp.get(src='socd') - dsp.get(src='soci')
-        factor2 = dsp.get(src='Q') / dsp.get(src='Pc') / dsp.get(src='nc')
-        tr = factor1 * factor2
-        # time that has charged
-        tc = self.MCS.config.ts - dsp.get(src='ts')
-        tc[tc < 0] = 0  # reset negative time to 0
-        # charge
-        dsp.set(src='soc0',
-                data=dsp.get(src='soci') + tc / factor2)
+        # # --- 4. initialize SOC ---
+        # # TODO: do we need to consider the AGC participation?
+        # # time required to charge to demanded SOC
+        # factor1 = dsp.get(src='socd') - dsp.get(src='soci')
+        # factor2 = dsp.get(src='Q') / dsp.get(src='Pc') / dsp.get(src='nc')
+        # tr = factor1 * factor2
+        # # time that has charged
+        # tc = self.MCS.config.ts - dsp.get(src='ts')
+        # tc[tc < 0] = 0  # reset negative time to 0
+        # # charge
+        # dsp.set(src='soc0',
+        #         data=dsp.get(src='soci') + tc / factor2)
         # ratio of stay/required time
         # kt = tc / tr
         # kt[kt < 1] = 1
@@ -428,16 +384,18 @@ class MCS():
     Control simulation.
     """
 
-    def __init__(self, config, idx, datas, datad, dcs, dcd) -> None:
+    def __init__(self, config, idx, cols, N) -> None:
         """
         Parameters
         ----------
         config: dict
             Monte-Carlo simulation configuration.
-        sdata: pd.DataFrame
-            Static data
-        ddata: pd.DataFrame
-            Dynamic data
+        idx: list
+            Index of the EV.
+        cols: list
+            Columns of the EV data.
+        N: int
+            Number of EVs.
 
         config
         ------
@@ -459,164 +417,163 @@ class MCS():
         self.config = DictAttr(config)
 
         # --- declear EV data ---
+        self.data = EVData(idx=idx, cols=cols, N=N)
         # time series columns
-        tsc = ['t', 'Pi', 'Prc', 'Ptc']
-        # time series columns as DictAttr
-        self.tsca = DictAttr({c: tsc.index(c) for c in tsc})
-        # timestamp in seconds
-        # NOTE: this might need to be extended if sim time is longer than th
-        t = np.arange(0, self.config.th * 3600 + 0.1,
-                      self.config.h)
-        ts = np.full((len(t), len(tsc)),
-                     fill_value=np.nan,
-                     dtype=np.float64)
-        ts[:, 0] = t
-        self.data = EVData(idx=idx, s=datas, d=datad, ts=ts,
-                           dcs=dcs, dcd=dcd, tsca=self.tsca)
+        # tsc = ['t', 'Pi', 'Prc', 'Ptc']
+        # # time series columns as DictAttr
+        # self.tsca = DictAttr({c: tsc.index(c) for c in tsc})
+        # # timestamp in seconds
+        # # NOTE: this might need to be extended if sim time is longer than th
+        # t = np.arange(0, self.config.th * 3600 + 0.1,
+        #               self.config.h)
+        # ts = np.full((len(t), len(tsc)),
+        #              fill_value=np.nan,
+        #              dtype=np.float64)
+        # ts[:, 0] = t
 
         # --- declear info dict ---
-        info = {'t': self.config.t, 'Pi': 0,
-                'Prc': 0.0, 'Ptc': 0}
-        self.info = DictAttr(info)
+        # info = {'t': self.config.t, 'Pi': 0,
+        #         'Prc': 0.0, 'Ptc': 0}
+        # self.info = DictAttr(info)
 
-    def g_ts(self) -> True:
-        """Update info into time series data"""
-        datas = self.data.s
-        datad = self.data.d
-        # NOTE: `Ptc`, `Prc`, are converted from kW to MW, seen from the grid
-        Prc = datad['agc'] * datad['u'] * datas['Pc'] * datas['nc']
-        Ptc = datad['c'] * datad['u'] * datas['Pc'] * datas['nc']
-        info = {'t': self.config.t, 'Pi': 0,
-                'Prc': -1 * Prc.sum() * 1e-3,
-                'Ptc': -1 * Ptc.sum() * 1e-3}
-        self.info = DictAttr(info)
-        datats = self.data.ts
-        # TODO: this might be slow and wrong
-        rid = datats[datats['t'] >= info['t']].index[0]
-        datats.loc[rid, info.keys()] = info.values()
+    # def g_ts(self) -> True:
+    #     """Update info into time series data"""
+    #     datas = self.data.s
+    #     datad = self.data.d
+    #     # NOTE: `Ptc`, `Prc`, are converted from kW to MW, seen from the grid
+    #     Prc = datad['agc'] * datad['u'] * datas['Pc'] * datas['nc']
+    #     Ptc = datad['c'] * datad['u'] * datas['Pc'] * datas['nc']
+    #     info = {'t': self.config.t, 'Pi': 0,
+    #             'Prc': -1 * Prc.sum() * 1e-3,
+    #             'Ptc': -1 * Ptc.sum() * 1e-3}
+    #     self.info = DictAttr(info)
+    #     datats = self.data.ts
+    #     # TODO: this might be slow and wrong
+    #     rid = datats[datats['t'] >= info['t']].index[0]
+    #     datats.loc[rid, info.keys()] = info.values()
 
-    def __repr__(self) -> str:
-        # TODO; any other info?
-        t0 = self.data.ts['t'].iloc[0]
-        t1 = self.config.tf
-        info = f'MCS: start from {t0}s, end at {t1}s, beginning from {self.config.ts}[H], '
-        return info
+    # def __repr__(self) -> str:
+    #     # TODO; any other info?
+    #     t0 = self.data.ts['t'].iloc[0]
+    #     t1 = self.config.tf
+    #     info = f'MCS: start from {t0}s, end at {t1}s, beginning from {self.config.ts}[H], '
+    #     return info
 
-    def run(self) -> bool:
-        """
-        Run Monte-Carlo simulation
-        """
-        # TODO: extend variable if self.config.tf > self.config.th * self.config.h
-        # --- variable ---
-        datas = self.data.s
-        datad = self.data.d
-        t0 = self.config.t  # start time of this run
-        resume = t0 > 0  # resume flag, true means not start from zero
-        perc_t = 0  # total percentage
-        perc_add = 0  # incremental percentage
-        pbar = tqdm(total=100, unit='%', file=sys.stdout,
-                    disable=self.config.no_tqdm)
-        # --- loop ---
-        while self.config.t < self.config.tf:
-            # --- computation ---
-            # --- 1. update timestamp ---
-            self.config.t += self.config.h
+    # def run(self) -> bool:
+    #     """
+    #     Run Monte-Carlo simulation
+    #     """
+    #     # TODO: extend variable if self.config.tf > self.config.th * self.config.h
+    #     # --- variable ---
+    #     datas = self.data.s
+    #     datad = self.data.d
+    #     t0 = self.config.t  # start time of this run
+    #     resume = t0 > 0  # resume flag, true means not start from zero
+    #     perc_t = 0  # total percentage
+    #     perc_add = 0  # incremental percentage
+    #     pbar = tqdm(total=100, unit='%', file=sys.stdout,
+    #                 disable=self.config.no_tqdm)
+    #     # --- loop ---
+    #     while self.config.t < self.config.tf:
+    #         # --- computation ---
+    #         # --- 1. update timestamp ---
+    #         self.config.t += self.config.h
 
-            # --- 2. update EV online status ---
-            self.g_u()
+    #         # --- 2. update EV online status ---
+    #         self.g_u()
 
-            # --- 3. update control ---
-            self.g_c()
-            # --- 4. update EV dynamic data ---
-            # --- 4.1 update soc interval and online status ---
-            # charging/discharging power, kW
-            datad['soc'] += datad['c'] * datas['nc'] * datas['Pc'] \
-                / datas['Q'] * self.config.h / 3600
-            # --- 4.2 modify outranged SoC ---
-            masku = datad[datad['soc'] >= 1.0].index
-            maskl = datad[datad['soc'] <= 0.0].index
-            datad.loc[masku, 'soc'] = 1.0
-            datad.loc[maskl, 'soc'] = 0.0
+    #         # --- 3. update control ---
+    #         self.g_c()
+    #         # --- 4. update EV dynamic data ---
+    #         # --- 4.1 update soc interval and online status ---
+    #         # charging/discharging power, kW
+    #         datad['soc'] += datad['c'] * datas['nc'] * datas['Pc'] \
+    #             / datas['Q'] * self.config.h / 3600
+    #         # --- 4.2 modify outranged SoC ---
+    #         masku = datad[datad['soc'] >= 1.0].index
+    #         maskl = datad[datad['soc'] <= 0.0].index
+    #         datad.loc[masku, 'soc'] = 1.0
+    #         datad.loc[maskl, 'soc'] = 0.0
 
-            # --- log info ---
-            self.g_ts()
-           # --- 2. update progress bar ---
-            if resume:
-                perc = 100 * self.config.h / (self.config.tf - t0)
-                perc_add = 100 * t0 / self.config.tf
-                resume = False  # reset resume flag
-            else:
-                perc = 100 * self.config.h / self.config.tf
-            perc_update = perc + perc_add
-            perc_update = round(perc_update, 2)
-            # --- limit pbar not exceed 100 ---
-            perc_update = min(100 - perc_t, perc_update)
-            pbar.update(perc_update)
-            perc_t += perc_update
+    #         # --- log info ---
+    #         self.g_ts()
+    #        # --- 2. update progress bar ---
+    #         if resume:
+    #             perc = 100 * self.config.h / (self.config.tf - t0)
+    #             perc_add = 100 * t0 / self.config.tf
+    #             resume = False  # reset resume flag
+    #         else:
+    #             perc = 100 * self.config.h / self.config.tf
+    #         perc_update = perc + perc_add
+    #         perc_update = round(perc_update, 2)
+    #         # --- limit pbar not exceed 100 ---
+    #         perc_update = min(100 - perc_t, perc_update)
+    #         pbar.update(perc_update)
+    #         perc_t += perc_update
 
-        pbar.close()
-        # TODO: exit_code
-        return True
+    #     pbar.close()
+    #     # TODO: exit_code
+    #     return True
 
-    def g_c(self, cvec=None, is_test=False) -> bool:
-        """
-        Generate EV control signal.
-        EV start to charge with rated power as soon as it plugs in.
-        The process will not be interrupted until receive control signal
-        or achieved demanmded SoC level.
+    # def g_c(self, cvec=None, is_test=False) -> bool:
+    #     """
+    #     Generate EV control signal.
+    #     EV start to charge with rated power as soon as it plugs in.
+    #     The process will not be interrupted until receive control signal
+    #     or achieved demanmded SoC level.
 
+    #     Test mode is used to build SSM A.
 
-        Test mode is used to build SSM A.
+    #     Parameters
+    #     ----------
+    #     cvec: np.array
+    #         EV control vector from EVCenter
+    #     is_test: bool
+    #         `True` to turn on test mode.
+    #         test mode: TBD
+    #     """
+    #     # --- variable pointer ---
+    #     datas = self.data.s
+    #     datad = self.data.d
+    #     if is_test:
+    #         # --- test mode ---
+    #         # TODO: add test mode
+    #         return True
+    #     if not cvec:
+    #         # --- revise control if no signal ---
+    #         # `CS` for low charged EVs, and set 'lc' to 1
+    #         mask_lc = datad[(datad['soc'] <= self.config.socf)
+    #                         & (datad['u']) >= 1.0].index
+    #         datad.loc[mask_lc, ['lc', 'c']] = 1.0
+    #         datad.loc[mask_lc, 'mod'] = 1.0
+    #         # `IS` for full EVs
+    #         mask_full = datad[(datad['soc'] >= datas['socd'])].index
+    #         datad.loc[mask_full, 'c'] = 0.0
+    #         # `IS` for offline EVs
+    #         datad['c'] = datad['c'] * datad['u']
+    #     else:
+    #         # --- response with control vector ---
+    #         # TODO: if control not zero, response to control signal
+    #         # NOTE: from EVC
+    #         pass
+    #     # TODO: is this necessary? reformatted control signal c2
+    #     # self.ev['c2'] = self.ev['c'].replace({1: 0, 0: 1, -1: 2})
+    #     return True
 
-        Parameters
-        ----------
-        cvec: np.array
-            EV control vector from EVCenter
-        is_test: bool
-            `True` to turn on test mode.
-            test mode: TBD
-        """
-        # --- variable pointer ---
-        datas = self.data.s
-        datad = self.data.d
-        if is_test:
-            # --- test mode ---
-            # TODO: add test mode
-            return True
-        if not cvec:
-            # --- revise control if no signal ---
-            # `CS` for low charged EVs, and set 'lc' to 1
-            mask_lc = datad[(datad['soc'] <= self.config.socf) & (datad['u']) >= 1.0].index
-            datad.loc[mask_lc, ['lc', 'c']] = 1.0
-            datad.loc[mask_lc, 'mod'] = 1.0
-            # `IS` for full EVs
-            mask_full = datad[(datad['soc'] >= datas['socd'])].index
-            datad.loc[mask_full, 'c'] = 0.0
-            # `IS` for offline EVs
-            datad['c'] = datad['c'] * datad['u']
-        else:
-            # --- response with control vector ---
-            # TODO: if control not zero, response to control signal
-            # NOTE: from EVC
-            pass
-        # TODO: is this necessary? reformatted control signal c2
-        # self.ev['c2'] = self.ev['c'].replace({1: 0, 0: 1, -1: 2})
-        return True
+    # def g_u(self) -> bool:
+    #     """
+    #     Update EV online status.
+    #     """
+    #     # --- variable pointer ---
 
-    def g_u(self) -> bool:
-        """
-        Update EV online status.
-        """
-        # --- variable pointer ---
-
-        dsp = self.data.s  # pointer to static data
-        ddp = self.data.d  # pointer to dynamic data
-        ddp.set(src='u0', data=ddp.get(src='u'))  # log previous online status
-        # --- check time range ---
-        # TODO: seems wrong, double check
-        u_check1 = dsp.get(src='ts') <= self.config.ts
-        u_check2 = dsp.get(src='tf') >= self.config.ts
-        u_check = u_check1 & u_check2
-        # --- update value ---
-        ddp.set(src='u', data=u_check)
-        return True
+    #     dsp = self.data.s  # pointer to static data
+    #     ddp = self.data.d  # pointer to dynamic data
+    #     ddp.set(src='u0', data=ddp.get(src='u'))  # log previous online status
+    #     # --- check time range ---
+    #     # TODO: seems wrong, double check
+    #     u_check1 = dsp.get(src='ts') <= self.config.ts
+    #     u_check2 = dsp.get(src='tf') >= self.config.ts
+    #     u_check = u_check1 & u_check2
+    #     # --- update value ---
+    #     ddp.set(src='u', data=u_check)
+    #     return True

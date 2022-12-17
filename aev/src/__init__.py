@@ -1,2 +1,2 @@
-from aev.src.evc import EVC
-from aev.src.evs import EVS
+from aev.src.evc import EVC  # NOQA
+from aev.src.evs import EVS  # NOQA
