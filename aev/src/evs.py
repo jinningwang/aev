@@ -1,17 +1,10 @@
-from aev.src.share import DictAttr, DataUnit
-import itertools
-import sys
-import time
-from collections import OrderedDict
-from tqdm import tqdm
+from aev.src.share import DictAttr
+from tqdm import tqdm  # NOQA
 import pandas as pd
 import numpy as np
-import scipy.stats as stats
-import matplotlib.pyplot as plt
-
-import pprint
-import io
-from contextlib import redirect_stdout
+import os
+import scipy.stats as stats  # NOQA
+import matplotlib.pyplot as plt  # NOQA
 
 import logging
 logger = logging.getLogger(__name__)
@@ -37,7 +30,7 @@ class EVData():
         cols: list
             EV data columns.
         N: int
-            Number of EVs.
+            Number of rows.
         """
         self.idx = idx
         self._cols = cols
@@ -53,8 +46,8 @@ class EVData():
             df[col] = getattr(self, col)
         return df
 
-    def __repr__(self) -> str:
-        pass
+    # def __repr__(self) -> str:
+    #     pass
 
 
 class EVS():
@@ -150,6 +143,7 @@ class EVS():
         self.MCS = MCS(config=mcs_config, idx=idx,
                        cols=cols, N=self.config.N)
         mdp = self.MCS.data  # pointer to MCS data
+        # TODO: CODE SMELL: declear in ``MCS`` but initialize here
 
         # --- initialize data ---
         # --- 1. uniform distribution parameters ---
@@ -219,169 +213,126 @@ class EVS():
                 value = np.delete(value, drop_id, axis=0)
                 setattr(mdp, col, value)
             # --- info ---
-            info_mem_save = f'Memory save is turned on, EVs out of time range '\
+            info_mem_save = f'Memory save:, EVs out of time range '\
                 f'[{self.MCS.config.ts}, {self.MCS.config.ts + self.MCS.config.th}] are dropped.'
             logger.warning(info_mem_save)
 
         # # --- 3. online status ---
-        # self.MCS.g_u()
-        # ddp.set(src='u0', data=ddp.get(src='u0'))
+        self.MCS.g_u()
+        mdp.u0 = mdp.u.copy()
 
-        # # --- 4. initialize SOC ---
-        # # TODO: do we need to consider the AGC participation?
-        # # time required to charge to demanded SOC
-        # factor1 = dsp.get(src='socd') - dsp.get(src='soci')
-        # factor2 = dsp.get(src='Q') / dsp.get(src='Pc') / dsp.get(src='nc')
-        # tr = factor1 * factor2
-        # # time that has charged
-        # tc = self.MCS.config.ts - dsp.get(src='ts')
-        # tc[tc < 0] = 0  # reset negative time to 0
-        # # charge
-        # dsp.set(src='soc0',
-        #         data=dsp.get(src='soci') + tc / factor2)
-        # ratio of stay/required time
-        # kt = tc / tr
-        # kt[kt < 1] = 1
-        # mask = kt > 1
-        # # higher than required charging time, log scale higher than socd
-        # socp = dsp.get(src='socd') + np.log(kt) * (1 - dsp.get(src='socd'))
-        # ddp.set(src='soc', data=socp[mask], cond=mask)
-        # # reset out of range EV soc
-        # soc = ddp.get(src='soc')
-        # mask_u = soc > 1.0
-        # mask_l = soc < 0.0
-        # soc[mask_u] = 1.0
-        # soc[mask_l] = 0.0
-        # ddp.set(src='soc', data=soc)
-        # sx_data = np.ceil(ddp.get(src='soc') / (1 / self.config.Ns)) - 1
-        # ddp.set(src='sx', data=sx_data)
+        # --- 4. initialize SOC ---
+        # TODO: do we need to consider the AGC participation?
+        # time required to charge to demanded SOC
+        tr = (mdp.socd - mdp.soci) * mdp.Q / mdp.Pc / mdp.nc
+        # time that has charged
+        tc = self.MCS.config.ts - mdp.ts
+        tc[tc < 0] = 0  # reset negative time to 0
+        # charge
+        mdp.soc = mdp.soci + tc * mdp.Pc * mdp.nc / mdp.Q
+        kt = tc / tr  # ratio of stay/required time
+        kt[kt < 1] = 1
+        # higher than required charging time, log scale higher than socd
+        socp = mdp.socd + np.log(kt) * (1 - mdp.socd)
+        socp[socp > 1.0] = 1.0
+        socp[socp < 0.0] = 0.0
+        mdp.soc[kt > 1] = socp[kt > 1]  # reset ``soc`` that are out of range
+        mdp.soc0 = mdp.soc.copy()  # initialize ``soc0``
+        mdp.sx = np.ceil(mdp.soc / (1 / self.config.Ns)) - \
+            1  # initialize soc level ``sx
 
-        # # --- 5. initialize control signal ---
-        # ddp.set(src='c', data=0.0 * np.ones(len(self.idx)))
-        # mask1 = (ddp.get(src='soc') < dsp.get(src='socd'))
-        # mask2 = (ddp.get(src='u') > 0)
-        # ddp.set(src='c', data=np.float64(mask1 & mask2))
+        # --- 5. Control, AGC, and mod ---
+        mask = (mdp.soc < mdp.socd) & (mdp.u > 0)
+        mdp.c = np.float64(mask)  # EV Control ``c``
+        mdp.agc = np.zeros(len(mdp.idx))  # EV AGC indicator ``agc``
+        mdp.mod = np.zeros(len(mdp.idx))  # EV MOD indicator ``mod``
 
-        # # --- 6. initialize other parameters ---
-        # ddp.set(src='agc', data=0.0 * np.ones(len(self.idx)))
-        # ddp.set(src='mod', data=0.0 * np.ones(len(self.idx)))
+        # # --- 6. initialize na [number of action] ---
+        # TODO: this part might need improvement
+        # history data of ina
+        if self.config.ict:
+            ina = np.genfromtxt(
+                os.getcwd() + '/aev/data/ev_ina_ict.csv', delimiter=',')
+        else:
+            ina = np.genfromtxt(
+                os.getcwd() + '/aev/data/ev_ina.csv', delimiter=',')
 
-        # # --- 7. initialize na [number of action] ---
-        # # TODO: this part seems wrong
-        # # load history data of ina
-        # if self.config.ict:
-        #     ina = np.genfromtxt('ev_ina_ict.csv', delimiter=',')
-        # else:
-        #     ina = np.genfromtxt('ev_ina.csv', delimiter=',')
+        # initialization of number of actions; truncated normal distribution;
+        sx0 = np.ceil(mdp.soc / (1 / self.config.Ns)) - 1
+        # size of each soc level
+        sx0 = pd.Series(sx0)
+        sx0d = sx0.value_counts().sort_index()
+        for i in sx0d.index:
+            i = int(i)
+            a, b = ina[i, 2], ina[i, 3]
+            if a == b:
+                b = a + 0.01
+            pdf = stats.norm(loc=0, scale=ina[i, 1])
+            res = pdf.rvs(sx0d[float(i)],
+                          random_state=self.config.seed).round(0)
+            mask = (mdp.sx == i)  # EVs that are in the given soc level
+            mdp.na[mask] = ina[i, 0] * \
+                (mdp.tf[mask] - self.MCS.config.ts) + res
+        mask = (mdp.soc < mdp.socd) & (mdp.na < 0)
+        na0_data = 1000 * (mdp.socd - mdp.soc)
+        mdp.na[mask] = na0_data[mask]
+        # TODO: DEBUG: scale up soc [0.6, 0.7] na0
+        mask = (mdp.soc < 0.7) & (mdp.soc > 0.5)
+        mdp.na[mask] *= 10
+        # for fully charged EVs, reset their na to 0
+        mdp.na[mdp.soc >= mdp.socd] = 0.0
+        mdp.na0 = mdp.na.copy()
+        # TODO: calc number of action mileage
+        # `nama` is the number of action mileage
+        mdp.ama = np.zeros(len(mdp.idx))
+        mdp.na[mdp.na < 0.0] = 0.0
 
-        # # initialization of number of actions; truncated normal distribution;
-        # soc = ddp.get(src='soc')
-        # sx0 = np.ceil(soc / (1 / self.config.Ns)) - 1
-        # # size of each sx
-        # sx0 = pd.Series(sx0)
-        # sx0d = sx0.value_counts().sort_index()
-        # for i in sx0d.index:
-        #     i = int(i)
-        #     a, b = ina[i, 2], ina[i, 3]
-        #     if a == b:
-        #         b = a + 0.01
-        #     pdf = stats.norm(loc=0, scale=ina[i, 1])
-        #     res = pdf.rvs(sx0d[float(i)], random_state=self.config.seed).round(0)
-        #     mask = (sx0 == i)
-        #     tf = dsp.get(src='tf')
-        #     na_data = ina[i, 0] * (tf[mask] - self.MCS.config.ts) + res
-        #     na_data0 = ddp.get(src='na')
-        #     na_data0[mask] = na_data
-        #     ddp.set(src='na', data=na_data0)
-        # soc = ddp.get(src='soc')
-        # socd = dsp.get(src='socd')
-        # na = ddp.get(src='na')
-        # mask = (soc < socd) & (na < 0)
-        # na0_data = 1000 * (socd - soc)
-        # na0_data[mask] = na[mask]
-        # ddp.set(src='na', data=na0_data)
-        # # DEBUG: scale up soc [0.6, 0.7] na0
-        # mask = (soc < 0.7) & (soc > 0.5)
-        # na_data = ddp.get(src='na')
-        # na_data[mask] = na0_data[mask] * 10
-        # ddp.set(src='na', data=na_data)
-        # # for fully charged EVs, reset their na to 0
-        # mask = (soc >= socd)
-        # na_data = ddp.get(src='na')
-        # na_data[mask] = 0.0
-        # ddp.set(src='na', data=na_data)
-        # dsp.set(src='na0', data=na_data)
-        # # TODO: calc number of action mileage
-        # ddp.set(src='ama', data=0.0)  # `nama` is the number of action mileage
-        # na_data = ddp.get(src='na')
-        # na_data[na_data < 0] = 0.0
-        # na_data = na_data.round(0).astype(float)
-        # ddp.set(src='na', data=na_data)
+        # --- 8. initialize nam [max number of action] ---
+        pcn = mdp.Pc * mdp.nc
+        nam_num = (mdp.tf - mdp.ts + mdp.tt) * pcn - mdp.socd * mdp.Q
+        nam_den = pcn * self.config.Tagc / 3600
+        mdp.nam = nam_num / nam_den
+        mdp.nam = mdp.nam.round(0).astype(float)
 
-        # # --- 8. initialize nam [max number of action] ---
-        # Pc = dsp.get(src='Pc')
-        # nc = dsp.get(src='nc')
-        # tf = dsp.get(src='tf')
-        # ts = dsp.get(src='ts')
-        # tt = dsp.get(src='tt')
-        # socd = dsp.get(src='socd')
-        # Q = dsp.get(src='Q')
-        # pcn = Pc * nc
-        # nam_data = ((tf - ts + tt) * pcn - socd * Q) / (pcn * self.config.Tagc / 3600)
-        # nam_data = nam_data.round(0).astype(float)
-        # dsp.set(src='nam', data=nam_data)
-
-        # # --- 9. initialize lc ---
-        # ddp.set(src='lc', data=0.0 * np.ones(self.config.N))
-        # if self.config.ict:
-        #     na = ddp.get(src='na')
-        #     nam = dsp.get(src='nam')
-        #     lc = ddp.get(src='lc')
-        #     mask = na >= nam
-        #     na_data[mask] = nam[mask]
-        #     lc_data = lc
-        #     lc_data[mask] = 1.0
-        #     ddp.set(src='na', data=na_data)
-        #     ddp.set(src='lc', data=lc_data)
-        # soc = ddp.get(src='soc')
-        # mask = soc <= self.config.socf  # force charging SOC level
-        # lc = ddp.get(src='lc')
-        # lc_data = lc
-        # lc_data[mask] = 1.0
-        # ddp.set(src='lc', data=lc_data)
+        # --- 9. initialize lc ---
+        mdp.lc = np.zeros(len(mdp.idx))
+        if self.config.ict:
+            mask = (mdp.na > mdp.nam)  # EVs that `na` exceeds `nam`
+            mdp.na[mask] = mdp.nam[mask]
+            mdp.lc[mask] = 1.0
+        mask = mdp.soc <= self.config.socf  # force charging SOC level
+        mdp.lc[mask] = 1.0
 
         # --- 10. initialize MCS data ---
-        # self.MCS.g_ts()
-    #     self.ctype()
+        self.MCS.g_ts()
 
-    #     # --- 11. data dict ---
-    #     # TODO: how to organize?
-    #     # NOTE: include MCS info and online EV info
+        # --- 11. data dict ---
+        # TODO: how to organize?
+        # NOTE: include MCS info and online EV info
 
-    #     # --- report info ---
-    #     init_info = f'{self.name}: Initialized successfully with:\n'\
-    #         f'Capacity: {self.config.N}, r: {self.config.r}\n'\
-    #         + self.__repr__()
-    #     logger.warning(init_info)
+        # --- report initialization info ---
+        init_info = f'{self.name}: Initialized successfully with:\n'\
+            f'Capacity: {self.config.N}, r: {self.config.r}\n'\
+            + self.__repr__()
+        logger.warning(init_info)
 
-    # def __repr__(self) -> str:
-    #     # TODO: how to organize?
-    #     datad = self.MCS.data.d
-    #     total = datad.shape[0]
-    #     online = int(datad['u'].sum())
-    #     info = f'{self.name}: clock time: {self.MCS.config.ts + self.MCS.config.t / 3600}, Online: {online}, Total: {total}'
-    #     return info
+    def __repr__(self) -> str:
+        # TODO: how to organize?
+        total = len(self.MCS.data.idx)
+        online = int(self.MCS.data.u.sum())
+        info = f'{self.name}: Clock: {self.MCS.config.ts + self.MCS.config.t / 3600}[H], Online: {online}, Total: {total}'
+        return info
 
-    # def rctrl(self):
-    #     """Response to control signal"""
-    #     pass
+    def rctrl(self):
+        """Response to control signal"""
+        # TODO: response to control signal
+        pass
 
 
 class MCS():
     """
     Class for Monte-Carlo simulation.
     Store EV data and timeseries data.
-    Control simulation.
     """
 
     def __init__(self, config, idx, cols, N) -> None:
@@ -416,48 +367,77 @@ class MCS():
         """
         self.config = DictAttr(config)
 
-        # --- declear EV data ---
+        # --- EV data ---
         self.data = EVData(idx=idx, cols=cols, N=N)
-        # time series columns
-        # tsc = ['t', 'Pi', 'Prc', 'Ptc']
-        # # time series columns as DictAttr
-        # self.tsca = DictAttr({c: tsc.index(c) for c in tsc})
-        # # timestamp in seconds
-        # # NOTE: this might need to be extended if sim time is longer than th
-        # t = np.arange(0, self.config.th * 3600 + 0.1,
-        #               self.config.h)
-        # ts = np.full((len(t), len(tsc)),
-        #              fill_value=np.nan,
-        #              dtype=np.float64)
-        # ts[:, 0] = t
+        # TODO: CODE SMELL: declear here but initialize in ``EVS``
 
-        # --- declear info dict ---
-        # info = {'t': self.config.t, 'Pi': 0,
-        #         'Prc': 0.0, 'Ptc': 0}
-        # self.info = DictAttr(info)
+        # --- Time series data ---
+        # --- 1. Station data ---
+        # NOTE: this might need to be extended if sim time is longer than ``th``
+        # TODO: might need a better way to declear the time series data
+        ts_cols = ['t', 'Pi', 'Prc', 'Ptc']
+        t = np.arange(0, self.config.th * 3600 + 0.1,
+                      self.config.h)  # timestamp in seconds
+        self.ts = EVData(idx=range(len(t)),  # CODESMELL: ``range(len(t))`` is not a list
+                         N=len(t), cols=ts_cols)
+        for col in ts_cols:
+            setattr(self.ts, col, np.zeros(len(t)))
+        self.ts.t = t
+        # --- 2. single EV data with part dynamic columns ---
+        # TODO: might include the dynamic data in the future
+        # dts_cols = ['u', 'soc', 'c', 'lc', 'sx', 'na', 'agc', 'mod']
+        # self.tsu = EVData(idx=[range(N)], N=N, cols=idx)
 
-    # def g_ts(self) -> True:
-    #     """Update info into time series data"""
-    #     datas = self.data.s
-    #     datad = self.data.d
-    #     # NOTE: `Ptc`, `Prc`, are converted from kW to MW, seen from the grid
-    #     Prc = datad['agc'] * datad['u'] * datas['Pc'] * datas['nc']
-    #     Ptc = datad['c'] * datad['u'] * datas['Pc'] * datas['nc']
-    #     info = {'t': self.config.t, 'Pi': 0,
-    #             'Prc': -1 * Prc.sum() * 1e-3,
-    #             'Ptc': -1 * Ptc.sum() * 1e-3}
-    #     self.info = DictAttr(info)
-    #     datats = self.data.ts
-    #     # TODO: this might be slow and wrong
-    #     rid = datats[datats['t'] >= info['t']].index[0]
-    #     datats.loc[rid, info.keys()] = info.values()
+        # --- Declear info dict ---
+        info = {'t': self.config.t, 'Pi': 0,
+                'Prc': 0.0, 'Ptc': 0}
+        self.info = DictAttr(info)
 
-    # def __repr__(self) -> str:
-    #     # TODO; any other info?
-    #     t0 = self.data.ts['t'].iloc[0]
-    #     t1 = self.config.tf
-    #     info = f'MCS: start from {t0}s, end at {t1}s, beginning from {self.config.ts}[H], '
-    #     return info
+    def g_u(self) -> bool:
+        """
+        Update EV online status.
+        """
+        # --- variable pointer ---
+        mdp = self.data  # pointer to ``MCS``(``self``) data
+        mdp.u0 = mdp.u  # log previous online status
+        # --- check time range ---
+        u_check1 = mdp.ts <= self.config.ts
+        u_check2 = mdp.tf >= self.config.ts
+        u_check = u_check1 & u_check2
+        # --- update value ---
+        mdp.u = np.array(u_check, dtype=float)
+        return True
+
+    def g_ts(self) -> True:
+        """Update info into time series data"""
+        mdp = self.data  # pointer to ``data`` of ``MCS``
+        # --- calculate charging station power ---
+        # NOTE: ``Ptc``, ``Prc``, from kW to MW, seen from the grid
+        Prc = mdp.agc * mdp.u * mdp.Pc * mdp.nc
+        Ptc = mdp.c * mdp.u * mdp.Pc * mdp.nc
+        info = {'t': self.config.t, 'Pi': 0,
+                'Prc': -1 * Prc.sum() * 1e-3,
+                'Ptc': -1 * Ptc.sum() * 1e-3}
+        self.info = DictAttr(info)
+        mtsp = self.ts  # pointer to time series data ``ts`` of ``MCS``
+        # --- update time series data ---
+        diff_t = mtsp.t - self.config.t  # time difference
+        # TODO: this is hard coded
+        # set negative time difference to a large number
+        diff_t[diff_t < 0] = 99999.0
+        # find the index of minimum element from the array
+        index = diff_t.argmin()
+        mtsp.Pi[index] = info['Pi']
+        mtsp.Prc[index] = info['Prc']
+        mtsp.Ptc[index] = info['Ptc']
+        return True
+
+    def __repr__(self) -> str:
+        # TODO; any other info?
+        t0 = self.ts.t[0]
+        t1 = self.config.tf
+        info = f'MCS: start from {t0}s, end at {t1}s, beginning from {self.config.ts}[H]'
+        return info
 
     # def run(self) -> bool:
     #     """
@@ -558,22 +538,4 @@ class MCS():
     #         pass
     #     # TODO: is this necessary? reformatted control signal c2
     #     # self.ev['c2'] = self.ev['c'].replace({1: 0, 0: 1, -1: 2})
-    #     return True
-
-    # def g_u(self) -> bool:
-    #     """
-    #     Update EV online status.
-    #     """
-    #     # --- variable pointer ---
-
-    #     dsp = self.data.s  # pointer to static data
-    #     ddp = self.data.d  # pointer to dynamic data
-    #     ddp.set(src='u0', data=ddp.get(src='u'))  # log previous online status
-    #     # --- check time range ---
-    #     # TODO: seems wrong, double check
-    #     u_check1 = dsp.get(src='ts') <= self.config.ts
-    #     u_check2 = dsp.get(src='tf') >= self.config.ts
-    #     u_check = u_check1 & u_check2
-    #     # --- update value ---
-    #     ddp.set(src='u', data=u_check)
     #     return True
