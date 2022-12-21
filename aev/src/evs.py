@@ -46,9 +46,6 @@ class EVData():
             df[col] = getattr(self, col)
         return df
 
-    # def __repr__(self) -> str:
-    #     pass
-
 
 class EVS():
     """
@@ -374,7 +371,7 @@ class MCS():
         # --- Time series data ---
         # --- 1. Station data ---
         # NOTE: this might need to be extended if sim time is longer than ``th``
-        # TODO: might need a better way to declear the time series data
+        # TODO: ask Hantao about dynamic variable declaration
         ts_cols = ['t', 'Pi', 'Prc', 'Ptc']
         t = np.arange(0, self.config.th * 3600 + 0.1,
                       self.config.h)  # timestamp in seconds
@@ -406,7 +403,7 @@ class MCS():
         u_check = u_check1 & u_check2
         # --- update value ---
         mdp.u = np.array(u_check, dtype=float)
-        return True
+        return mdp.u
 
     def g_ts(self) -> True:
         """Update info into time series data"""
@@ -436,7 +433,7 @@ class MCS():
         # TODO; any other info?
         t0 = self.ts.t[0]
         t1 = self.config.tf
-        info = f'MCS: start from {t0}s, end at {t1}s, beginning from {self.config.ts}[H]'
+        info = f'MCS: start from {t0}s, end at {t1}s. Clock begins from {self.config.ts}[H]'
         return info
 
     # def run(self) -> bool:
@@ -495,47 +492,43 @@ class MCS():
     #     # TODO: exit_code
     #     return True
 
-    # def g_c(self, cvec=None, is_test=False) -> bool:
-    #     """
-    #     Generate EV control signal.
-    #     EV start to charge with rated power as soon as it plugs in.
-    #     The process will not be interrupted until receive control signal
-    #     or achieved demanmded SoC level.
+    def g_c(self, cvec=None, is_test=False) -> bool:
+        """
+        Generate EV control signal.
+        EV start to charge with rated power as soon as it plugs in.
+        The process will not be interrupted until receive control signal
+        or achieved demanmded SoC level.
 
-    #     Test mode is used to build SSM A.
+        Test mode is used to build SSM A.
 
-    #     Parameters
-    #     ----------
-    #     cvec: np.array
-    #         EV control vector from EVCenter
-    #     is_test: bool
-    #         `True` to turn on test mode.
-    #         test mode: TBD
-    #     """
-    #     # --- variable pointer ---
-    #     datas = self.data.s
-    #     datad = self.data.d
-    #     if is_test:
-    #         # --- test mode ---
-    #         # TODO: add test mode
-    #         return True
-    #     if not cvec:
-    #         # --- revise control if no signal ---
-    #         # `CS` for low charged EVs, and set 'lc' to 1
-    #         mask_lc = datad[(datad['soc'] <= self.config.socf)
-    #                         & (datad['u']) >= 1.0].index
-    #         datad.loc[mask_lc, ['lc', 'c']] = 1.0
-    #         datad.loc[mask_lc, 'mod'] = 1.0
-    #         # `IS` for full EVs
-    #         mask_full = datad[(datad['soc'] >= datas['socd'])].index
-    #         datad.loc[mask_full, 'c'] = 0.0
-    #         # `IS` for offline EVs
-    #         datad['c'] = datad['c'] * datad['u']
-    #     else:
-    #         # --- response with control vector ---
-    #         # TODO: if control not zero, response to control signal
-    #         # NOTE: from EVC
-    #         pass
-    #     # TODO: is this necessary? reformatted control signal c2
-    #     # self.ev['c2'] = self.ev['c'].replace({1: 0, 0: 1, -1: 2})
-    #     return True
+        Parameters
+        ----------
+        cvec: np.array
+            EV control vector from EVCenter
+        is_test: bool
+            `True` to turn on test mode.
+            test mode: TBD
+        """
+        mdp = self.data  # pointer to ``MCS``(``self``) data
+        if is_test:
+            # --- test mode ---
+            # TODO: add test mode
+            return True
+        if cvec:
+            # --- response with control vector ---
+            # TODO: if control not zero, response to control signal
+            # NOTE: from EVC
+            pass
+            return True
+        else:
+            # --- revise control if no signal ---
+            # `CS` for low charged EVs, and set 'lc' to 1
+            mask_lc = (mdp.soc <= self.config.socf) & (mdp.u >= 1.0)
+            mdp.c[mask_lc] = 1.0
+            mdp.mod[mask_lc] = 1.0
+            # `IS` for full EVs
+            mask_full = mdp.soc >= mdp.socd
+            mdp.c[mask_full] = 0.0
+            # `IS` for offline EVs
+            mdp.c *= mdp.u
+            return mdp.c
