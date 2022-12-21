@@ -529,3 +529,20 @@ class MCS():
             # `IS` for offline EVs
             mdp.c *= mdp.u
             return mdp.c
+
+    def plot(self, fig=None, ax=None, style='default', **kwargs):
+        """
+        Plot time series data of MCS.
+        """
+        plt.style.use(style)
+        mtsp = self.ts.as_df()
+        if not fig and not ax:
+            fig, ax = plt.subplots(**kwargs)
+        mtsp.plot(x='t', y=['Ptc', 'Prc', 'Pi'],
+                  fig=fig, ax=ax)
+        ax.set_xlabel('Time [s]')
+        ax.set_ylabel('Power [MW]')
+        ax.set_xlim([self.config.ts, self.config.tf])
+        ax.grid(which='major', axis='both')
+        ax.legend(['Total', 'Response', 'Control'])
+        return fig, ax
