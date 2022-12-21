@@ -399,9 +399,8 @@ class MCS():
         mdp = self.data  # pointer to ``MCS``(``self``) data
         mdp.u0 = mdp.u  # log previous online status
         # --- check time range ---
-        u_check1 = mdp.ts <= self.config.ts
-        u_check2 = mdp.tf >= self.config.ts
-        u_check = u_check1 & u_check2
+        t_now = self.config.t / 3600 + self.config.ts
+        u_check = (mdp.ts <= t_now) & (t_now <= mdp.tf)
         # --- update value ---
         mdp.u = np.array(u_check, dtype=float)
         return mdp.u
@@ -518,6 +517,7 @@ class MCS():
             return True
         else:
             # --- revise control if no signal ---
+            mdp.c = mdp.u.copy()  # all online EVs are controlled to charge
             # `CS` for low charged EVs, and set 'lc' to 1
             mask_lc = (mdp.soc <= self.config.socf) & (mdp.u >= 1.0)
             mdp.c[mask_lc] = 1.0
