@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class EVData():
     """EV data class"""
 
-    def __init__(self, idx, cols, N) -> None:
+    def __init__(self, cols, N, idx=None, no_idx=False) -> None:
         """
         Two pandas.DataFrame are used to store EV data, one for static data,
         the other for dynamic data.
@@ -26,14 +26,18 @@ class EVData():
 
         Parameters
         ----------
-        idx: list
-            EV index.
         cols: list
             EV data columns.
         N: int
             Number of rows.
+        idx: list
+            EV index.
+        no_idx: bool
+            If True, discard input ``idx`` and ``N``.
         """
-        self.idx = idx
+        self.no_idx = no_idx
+        if not self.no_idx:
+            self.idx = idx
         self._cols = cols
         for col in self._cols:
             setattr(self, col, np.array([-9.0]*N))
@@ -42,7 +46,10 @@ class EVData():
         """Convert to pandas.DataFrame"""
         # TODO: improve
         df = pd.DataFrame()
-        df['idx'] = self.idx
+        if self.no_idx:
+            pass
+        else:
+            df['idx'] = self.idx
         for col in self._cols:
             df[col] = getattr(self, col)
         return df
@@ -62,12 +69,12 @@ class EVS():
         ----------
         config: dict
             EV station configuration.
+        mcs_config: dict
+            EV MCS configuration.
         ud_param: Dict of Dict
             Uniform distribution parameters.
         nd_param: Dict of Dict
             Normal distribution parameters.
-        t: float
-            Simulation start time in 24 hour.
         name: str
             EV station name.
 
@@ -132,7 +139,8 @@ class EVS():
 
         # --- initialize MCS ---
         # add current timestamp `t` to config
-        mcs_config = {**{'t': 0.0, 'tf': 0.0,
+        mcs_config = {**{'t': mcs_config['ts'],
+                         'tf': mcs_config['ts'],
                          'socf': self.config.socf,
                          'agc': self.config.agc,
                          'ict': self.config.ict},
@@ -349,9 +357,9 @@ class MCS():
         config
         ------
         t: float
-            Current timestamp in seconds.
+            Current timestamp in hour.
         tf: float
-            Simulation end time in seconds.
+            Simulation end time in hour.
         ts: float
             Simulation start time in 24 hour.
         th: float
@@ -373,22 +381,21 @@ class MCS():
         # --- 1. Station data ---
         # NOTE: this might need to be extended if sim time is longer than ``th``
         # TODO: ask Hantao about dynamic variable declaration
-        ts_cols = ['t', 'Pi', 'Prc', 'Ptc']
-        t = np.arange(0, self.config.th * 3600 + 0.1,
-                      self.config.h)  # timestamp in seconds
-        self.ts = EVData(idx=range(len(t)),  # CODESMELL: ``range(len(t))`` is not a list
-                         N=len(t), cols=ts_cols)
-        for col in ts_cols:
-            setattr(self.ts, col, np.zeros(len(t)))
-        self.ts.t = t
+        ts_cols = ['t', 'Ptc', 'Prc', 'Pi']
+        # t = np.arange(self.config.ts, self.config.tf + 0.1,
+        #               self.config.h)  # timestamp in seconds
+        self.ts = EVData(no_idx=True,  # CODESMELL: ``range(len(t))`` is not a list
+                         N=0, cols=ts_cols)
+        # for col in ts_cols:
+        #     setattr(self.ts, col, np.zeros(1))
         # --- 2. single EV data with part dynamic columns ---
         # TODO: might include the dynamic data in the future
         # dts_cols = ['u', 'soc', 'c', 'lc', 'sx', 'na', 'agc', 'mod']
         # self.tsu = EVData(idx=[range(N)], N=N, cols=idx)
 
         # --- Declear info dict ---
-        info = {'t': self.config.t, 'Pi': 0,
-                'Prc': 0.0, 'Ptc': 0}
+        info = {'t': self.config.t, 'Ptc': 0,
+                'Prc': 0.0, 'Pi': 0}
         self.info = DictAttr(info)
 
     def g_u(self) -> bool:
@@ -399,8 +406,7 @@ class MCS():
         mdp = self.data  # pointer to ``MCS``(``self``) data
         mdp.u0 = mdp.u  # log previous online status
         # --- check time range ---
-        t_now = self.config.t / 3600 + self.config.ts
-        u_check = (mdp.ts <= t_now) & (t_now <= mdp.tf)
+        u_check = (mdp.ts <= self.config.t) & (self.config.t <= mdp.tf)
         # --- update value ---
         mdp.u = np.array(u_check, dtype=float)
         return mdp.u
@@ -418,15 +424,10 @@ class MCS():
         self.info = DictAttr(info)
         mtsp = self.ts  # pointer to time series data ``ts`` of ``MCS``
         # --- update time series data ---
-        diff_t = mtsp.t - self.config.t  # time difference
-        # TODO: this is hard coded
-        # set negative time difference to a large number
-        diff_t[diff_t < 0] = 99999.0
-        # find the index of minimum element from the array
-        index = diff_t.argmin()
-        mtsp.Pi[index] = info['Pi']
-        mtsp.Prc[index] = info['Prc']
-        mtsp.Ptc[index] = info['Ptc']
+        mtsp.t = np.append(mtsp.t, self.config.t)
+        mtsp.Pi = np.append(mtsp.Pi, info['Pi'])
+        mtsp.Prc = np.append(mtsp.Prc, info['Prc'])
+        mtsp.Ptc = np.append(mtsp.Ptc, info['Ptc'])
         return True
 
     def __repr__(self) -> str:
@@ -452,13 +453,14 @@ class MCS():
         while self.config.t < self.config.tf:
             # --- computation ---
             # --- 1. update timestamp ---
-            self.config.t += self.config.h
+            self.config.t += self.config.h / 3600
 
             # --- 2. update EV online status ---
             self.g_u()
 
             # --- 3. update control ---
             self.g_c()
+
             # --- 4. update EV dynamic data ---
             # --- 4.1 update soc interval and online status ---
             # charging/discharging power, kW
@@ -482,7 +484,6 @@ class MCS():
             perc_update = min(100 - perc_t, perc_update)
             pbar.update(perc_update)
             perc_t += perc_update
-
         pbar.close()
         # TODO: exit_code
         return True
