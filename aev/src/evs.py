@@ -3,6 +3,7 @@ from tqdm import tqdm  # NOQA
 import pandas as pd
 import numpy as np
 import os
+import sys
 import scipy.stats as stats  # NOQA
 import matplotlib.pyplot as plt  # NOQA
 
@@ -433,64 +434,59 @@ class MCS():
         # TODO; any other info?
         t0 = self.ts.t[0]
         t1 = self.config.tf
-        info = f'MCS: start from {t0}s, end at {t1}s. Clock begins from {self.config.ts}[H]'
+        info = f'MCS: start at {t0}s, end at {t1}s. Clock begins from {self.config.ts}[H]'
         return info
 
-    # def run(self) -> bool:
-    #     """
-    #     Run Monte-Carlo simulation
-    #     """
-    #     # TODO: extend variable if self.config.tf > self.config.th * self.config.h
-    #     # --- variable ---
-    #     datas = self.data.s
-    #     datad = self.data.d
-    #     t0 = self.config.t  # start time of this run
-    #     resume = t0 > 0  # resume flag, true means not start from zero
-    #     perc_t = 0  # total percentage
-    #     perc_add = 0  # incremental percentage
-    #     pbar = tqdm(total=100, unit='%', file=sys.stdout,
-    #                 disable=self.config.no_tqdm)
-    #     # --- loop ---
-    #     while self.config.t < self.config.tf:
-    #         # --- computation ---
-    #         # --- 1. update timestamp ---
-    #         self.config.t += self.config.h
+    def run(self) -> bool:
+        """
+        Run Monte-Carlo simulation
+        """
+        # TODO: extend variable if self.config.tf > self.config.th * self.config.h
+        mdp = self.data  # pointer to ``MCS``(``self``) data
+        t0 = self.config.t  # start time of this run
+        resume = t0 > 0  # resume flag, true means not start from zero
+        perc_t = 0  # total percentage
+        perc_add = 0  # incremental percentage
+        pbar = tqdm(total=100, unit='%', file=sys.stdout,
+                    disable=self.config.no_tqdm)
+        # --- loop ---
+        while self.config.t < self.config.tf:
+            # --- computation ---
+            # --- 1. update timestamp ---
+            self.config.t += self.config.h
 
-    #         # --- 2. update EV online status ---
-    #         self.g_u()
+            # --- 2. update EV online status ---
+            self.g_u()
 
-    #         # --- 3. update control ---
-    #         self.g_c()
-    #         # --- 4. update EV dynamic data ---
-    #         # --- 4.1 update soc interval and online status ---
-    #         # charging/discharging power, kW
-    #         datad['soc'] += datad['c'] * datas['nc'] * datas['Pc'] \
-    #             / datas['Q'] * self.config.h / 3600
-    #         # --- 4.2 modify outranged SoC ---
-    #         masku = datad[datad['soc'] >= 1.0].index
-    #         maskl = datad[datad['soc'] <= 0.0].index
-    #         datad.loc[masku, 'soc'] = 1.0
-    #         datad.loc[maskl, 'soc'] = 0.0
+            # --- 3. update control ---
+            self.g_c()
+            # --- 4. update EV dynamic data ---
+            # --- 4.1 update soc interval and online status ---
+            # charging/discharging power, kW
+            mdp.soc += mdp.c * mdp.nc * mdp.Pc / mdp.Q * self.config.h / 3600
+            # --- 4.2 modify outranged SoC ---
+            mdp.soc[mdp.soc > 1.0] = 1.0
+            mdp.soc[mdp.soc < 0.0] = 0.0
 
-    #         # --- log info ---
-    #         self.g_ts()
-    #        # --- 2. update progress bar ---
-    #         if resume:
-    #             perc = 100 * self.config.h / (self.config.tf - t0)
-    #             perc_add = 100 * t0 / self.config.tf
-    #             resume = False  # reset resume flag
-    #         else:
-    #             perc = 100 * self.config.h / self.config.tf
-    #         perc_update = perc + perc_add
-    #         perc_update = round(perc_update, 2)
-    #         # --- limit pbar not exceed 100 ---
-    #         perc_update = min(100 - perc_t, perc_update)
-    #         pbar.update(perc_update)
-    #         perc_t += perc_update
+            # --- log info ---
+            self.g_ts()
+           # --- update progress bar ---
+            if resume:
+                perc = 100 * self.config.h / (self.config.tf - t0)
+                perc_add = 100 * t0 / self.config.tf
+                resume = False  # reset resume flag
+            else:
+                perc = 100 * self.config.h / self.config.tf
+            perc_update = perc + perc_add
+            perc_update = round(perc_update, 2)
+            # --- limit pbar not exceed 100 ---
+            perc_update = min(100 - perc_t, perc_update)
+            pbar.update(perc_update)
+            perc_t += perc_update
 
-    #     pbar.close()
-    #     # TODO: exit_code
-    #     return True
+        pbar.close()
+        # TODO: exit_code
+        return True
 
     def g_c(self, cvec=None, is_test=False) -> bool:
         """
